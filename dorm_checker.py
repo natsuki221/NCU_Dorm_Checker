@@ -9,6 +9,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.common.action_chains import ActionChains
+from pydub import AudioSegment, playback
 from dotenv import load_dotenv
 
 # 可選：2Captcha 整合（需安裝 twocaptcha 模組：pip install twocaptcha）
@@ -21,6 +22,8 @@ username = os.getenv("USERNAME", "您的帳號")
 password = os.getenv("PASSWORD", "您的密碼")
 discord_webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "您的Discord Webhook URL")
 dorm_name = ["DormGH_1", "DormGH_2", "DormHsiW_1", "DormHsiW_2"]
+reCaptcha_alert = AudioSegment.from_wav("./audio/Bell_notification.wav")  # reCAPTCHA提示音
+empty_dorm_alert = AudioSegment.from_wav("./audio/Urgent_digital_alarm.wav")  # 空房提示音
 # 可選：2Captcha API Key
 # twocaptcha_api_key = os.getenv("TWOCAPTCHA_API_KEY", "您的2Captcha API Key")
 
@@ -88,16 +91,19 @@ def check_is_dorm_empty(driver, dorm_name, wait):
                 message = f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] 宿舍 {dorm_name} 有空房！請盡快查詢：{query_url}'
                 send_discord_notification(message)
                 print(message)
+                return True
             else:
                 print(
                     f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] 宿舍 {dorm_name} 目前無空房。'
                 )
+                return False
         except:
             # 若找不到表格，檢查無空房提示訊息
             driver.find_element(By.XPATH, "/html/body/div[4]/div/div[3]/p")
             print(
                 f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] 宿舍 {dorm_name} 目前無空房。'
             )
+            return False
 
     except Exception as e:
         print(f"檢查宿舍 {dorm_name} 時發生錯誤：{str(e)}")
@@ -142,8 +148,14 @@ def check_dorm_availability():
         """
         )
 
+        # 發送開始檢查的Discord通知
+        send_discord_notification(
+            f"開始檢查宿舍空房：{ time.strftime('%Y-%m-%d %H:%M:%S') }，請準備做reCAPTCHA驗證。"
+        )
+                
         # 步驟1: 登入
         driver.get(login_url)
+        playback.play(reCaptcha_alert)
         wait = WebDriverWait(driver, 5)
 
         # 檢查是否有Cookie提示並接受
@@ -217,17 +229,27 @@ def check_dorm_availability():
         # 等待頁面載入
         wait.until(EC.presence_of_element_located((By.ID, "formEmptyBed")))
 
+        # 初始化變數
+        is_empty = False
+
         # 步驟4: 檢查每個宿舍
         for i in range(random.randint(7, 10)):
             for dorm in dorm_name:
                 time.sleep(random.uniform(1, 3))
-                check_is_dorm_empty(driver, dorm, wait)
+                is_empty = check_is_dorm_empty(driver, dorm, wait)
                 # 返回查詢頁面以進行下一次查詢
                 time.sleep(random.uniform(1, 2))
                 # driver.get(query_url)
                 wait.until(EC.presence_of_element_located((By.ID, "formEmptyBed")))
+                if is_empty:
+                    break
 
-            print(f"第 {i + 1} 次檢查完成，等待下一次檢查...")
+            if is_empty:
+                print(f"第 {i + 1} 次檢查完成，已找到空房，停止檢查...")
+                break
+            else:
+                print(f"第 {i + 1} 次檢查完成，等待下一次檢查...")
+                time.sleep(random.randint(180, 600))  # 等待3~10分鐘
 
     except Exception as e:
         print(f"錯誤發生：{str(e)}，將在下次間隔重試。")
@@ -237,6 +259,7 @@ def check_dorm_availability():
 
     finally:
         driver.quit()
+        return is_empty
 
 
 # 主迴圈：定時執行
@@ -246,7 +269,12 @@ if __name__ == "__main__":
         "啟用時間：{ " + time.strftime("%Y-%m-%d %H:%M:%S") + " }"
     )
     while True:
-        check_dorm_availability()
-        interval = random.randint(480, 600)  # 8~10分鐘隨機秒數
-        print(f"等待 {interval} 秒後下次檢查...")
-        time.sleep(interval)
+        IS_EMPTY = check_dorm_availability()
+        if IS_EMPTY:
+            playback.play(empty_dorm_alert)
+            print("已找到空房，請盡快查詢！")
+            break
+        else:
+            interval = random.randint(480, 600)  # 8~10分鐘隨機秒數
+            print(f"等待 {interval} 秒後下次檢查...")
+            time.sleep(interval)
